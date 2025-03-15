@@ -210,37 +210,50 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+# Main application window layout
+st.title("YouTube Smart Sorter")
+
+# Initialize session state for important variables
+if "source_type" not in st.session_state:
+    st.session_state.source_type = "channel"
 if "api_key" not in st.session_state:
     st.session_state.api_key = os.getenv("YOUTUBE_API_KEY", "")
 if "videos_df" not in st.session_state:
     st.session_state.videos_df = None
-if "raw_videos" not in st.session_state:
-    st.session_state.raw_videos = None
 if "channel_id" not in st.session_state:
     st.session_state.channel_id = ""
-if "last_channel_input" not in st.session_state:
-    st.session_state.last_channel_input = ""
 if "playlist_id" not in st.session_state:
     st.session_state.playlist_id = ""
+if "raw_videos" not in st.session_state:
+    st.session_state.raw_videos = []
+if "show_confirmation" not in st.session_state:
+    st.session_state.show_confirmation = False
+if "run_fetch" not in st.session_state:
+    st.session_state.run_fetch = False
+if "last_channel_input" not in st.session_state:
+    st.session_state.last_channel_input = ""
 if "last_playlist_input" not in st.session_state:
     st.session_state.last_playlist_input = ""
-if "source_type" not in st.session_state:
-    st.session_state.source_type = "channel"  # Default to channel
 if "api_call_count" not in st.session_state:
     st.session_state.api_call_count = 0
 if "total_api_call_count" not in st.session_state:
     st.session_state.total_api_call_count = 0
 if "estimate_info" not in st.session_state:
     st.session_state.estimate_info = None
-if "show_confirmation" not in st.session_state:
-    st.session_state.show_confirmation = False
 if "cache_entries" not in st.session_state:
     st.session_state.cache_entries = []
 if "selected_cache_id" not in st.session_state:
     st.session_state.selected_cache_id = None
 if "cache_loaded" not in st.session_state:
     st.session_state.cache_loaded = False
+if "like_weight" not in st.session_state:
+    st.session_state.like_weight = 1.0
+if "view_weight" not in st.session_state:
+    st.session_state.view_weight = 0.1
+if "half_life_days" not in st.session_state:
+    st.session_state.half_life_days = 90
+if "channel_search_results" not in st.session_state:
+    st.session_state.channel_search_results = []
 
 # Define callback functions for buttons to ensure proper state management
 def estimate_api_calls():
@@ -381,7 +394,7 @@ with st.sidebar:
                     if st.button("Load", key=f"load_{entry['id']}"):
                         load_from_cache(entry['id'])
                         st.success("Loaded from cache!")
-                        st.experimental_rerun()
+                        st.rerun()
                 
                 with col2:
                     if st.button("Delete", key=f"delete_{entry['id']}"):
@@ -389,14 +402,14 @@ with st.sidebar:
                             if st.session_state.selected_cache_id == entry['id']:
                                 st.session_state.selected_cache_id = None
                             st.success("Deleted!")
-                            st.experimental_rerun()
+                            st.rerun()
         
         # Add button to clear all cache
         if st.button("Clear All Cache"):
             count = clear_all_cache()
             st.session_state.selected_cache_id = None
             st.success(f"Deleted {count} cache entries!")
-            st.experimental_rerun()
+            st.rerun()
     else:
         st.info("No saved results found. Search for videos and use the 'Save Results' button to store them.")
     
@@ -406,17 +419,88 @@ with st.sidebar:
     
     # Input selection
     st.subheader("Video Source")
-    source_type = st.radio("Select Source Type", ["Channel", "Playlist"], index=0 if st.session_state.source_type == "channel" else 1)
-    st.session_state.source_type = source_type.lower()
-    
+    source_type = st.radio("Select Source Type", ["Channel", "Playlist", "Search Channels"], index=0 if st.session_state.source_type == "channel" else (1 if st.session_state.source_type == "playlist" else 2))
+    st.session_state.source_type = source_type.lower().replace(" ", "_")
+
     if st.session_state.source_type == "channel":
         # Channel input
         channel_input = st.text_input("YouTube Channel Username or URL")
         playlist_input = ""  # Reset playlist input
-    else:
+        search_query = ""    # Reset search query
+    elif st.session_state.source_type == "playlist":
         # Playlist input
         playlist_input = st.text_input("YouTube Playlist ID or URL")
         channel_input = ""  # Reset channel input
+        search_query = ""   # Reset search query
+    else:  # search_channels
+        # Channel search input
+        search_query = st.text_input("Search for YouTube Channels")
+        channel_input = ""  # Reset channel input
+        playlist_input = "" # Reset playlist input
+        
+        # Add search button and logic for channel search
+        if search_query and st.button("Search Channels"):
+            st.session_state.api_key = api_key
+            
+            with st.spinner("Searching for channels..."):
+                try:
+                    # Initialize API
+                    youtube_api = YouTubeAPI(api_key)
+                    
+                    # Special channel search function to find multiple channels
+                    search_results = youtube_api.search_channels(search_query, max_results=10)
+                    
+                    if search_results:
+                        st.session_state.channel_search_results = search_results
+                        st.success(f"Found {len(search_results)} channels!")
+                    else:
+                        st.error("No channels found. Try a different search term.")
+                        st.session_state.channel_search_results = []
+                except Exception as e:
+                    st.error(f"Error searching for channels: {str(e)}")
+                    st.session_state.channel_search_results = []
+        
+        # Display search results if available
+        if "channel_search_results" in st.session_state and st.session_state.channel_search_results:
+            st.subheader("Select a Channel to Rate Videos")
+            
+            # Create columns for better display
+            for i, channel in enumerate(st.session_state.channel_search_results):
+                col1, col2 = st.columns([1, 3])
+                
+                with col1:
+                    if "thumbnail_url" in channel and channel["thumbnail_url"]:
+                        st.image(channel["thumbnail_url"], width=80)
+                    else:
+                        st.write("🎬")
+                        
+                with col2:
+                    st.write(f"**{channel['title']}**")
+                    st.write(f"Subscribers: {channel.get('subscriber_count', 'N/A')}")
+                    st.write(f"Videos: {channel.get('video_count', 'N/A')}")
+                    
+                    # Add Rate Videos button without nested columns
+                    if st.button(f"Rate Videos", key=f"select_channel_{i}"):
+                        # Set the selected channel as the current channel
+                        st.session_state.source_type = "channel"
+                        st.session_state.channel_id = channel["id"]
+                        st.session_state.last_channel_input = channel["id"]
+                        st.session_state.show_confirmation = True
+                        st.session_state.estimate_info = {
+                            "type": "channel_alternative",
+                            "input": channel["title"],
+                            "estimated_calls": channel.get("estimated_calls", 10),
+                            "item_count": channel.get("video_count", 0),
+                            "already_cached": False
+                        }
+                        # Use st.rerun() instead of the deprecated st.experimental_rerun()
+                        st.rerun()
+                    
+                    # Add a button to view the channel directly on YouTube
+                    channel_url = f"https://www.youtube.com/channel/{channel['id']}"
+                    st.markdown(f'<a href="{channel_url}" target="_blank"><button style="background-color:#FF0000;color:white;padding:8px 12px;border:none;border-radius:4px;cursor:pointer;">View on YouTube</button></a>', unsafe_allow_html=True)
+                
+                st.markdown("---")
     
     # Extract playlist ID from URL if needed
     if playlist_input and "youtube.com/playlist" in playlist_input:
@@ -433,6 +517,11 @@ with st.sidebar:
     like_weight = st.slider("Like Weight", 0.1, 5.0, 1.0, 0.1)
     view_weight = st.slider("View Weight", 0.01, 1.0, 0.1, 0.01)
     half_life_days = st.slider("Half-life (days)", 7, 365, 90, 1)
+    
+    # Add option for exact matching
+    st.subheader("Advanced Options")
+    allow_partial_matches = st.checkbox("Allow partial channel name matches", value=False, 
+                                       help="When disabled (recommended), only exact channel name matches will be returned. Enable only if you're having trouble finding a channel.")
     
     # Reset confirmation if input changes
     if (st.session_state.source_type == "channel" and 
@@ -458,25 +547,25 @@ with st.sidebar:
                 
                 # Handle channel input
                 if st.session_state.source_type == "channel" and channel_input:
-                    # Extract channel ID for estimation
-                    if "youtube.com/channel/" in channel_input:
-                        # Direct channel ID format
-                        channel_id = channel_input.split("/")[-1].split("?")[0]
-                        estimate_info = youtube_api.estimate_channel_api_calls(channel_id)
-                    else:
-                        # Try to resolve as username, handle, etc.
-                        estimate_info = youtube_api.estimate_channel_api_calls(channel_input)
-                    
-                    if "error" not in estimate_info:
-                        st.session_state.estimate_info = {
-                            "type": "channel",
-                            "input": channel_input,
-                            "estimated_calls": estimate_info["estimated_calls"],
-                            "item_count": estimate_info["video_count"],
-                            "already_cached": estimate_info.get("already_cached", False)
-                        }
-                    else:
-                        st.error(f"Error estimating API calls: {estimate_info['error']}")
+                    try:
+                        # First get the channel ID, then convert to modified playlist ID
+                        modified_id = youtube_api.get_modified_playlist_id_from_channel(channel_input, allow_partial_matches=allow_partial_matches)
+                        # Estimate using the playlist estimation method
+                        estimate_info = youtube_api.estimate_playlist_api_calls(modified_id)
+                        
+                        if "error" not in estimate_info:
+                            st.session_state.estimate_info = {
+                                "type": "channel_alternative",
+                                "input": channel_input,
+                                "estimated_calls": estimate_info["estimated_calls"],
+                                "item_count": estimate_info["playlist_size"],
+                                "already_cached": estimate_info.get("already_cached", False)
+                            }
+                        else:
+                            st.error(f"Error estimating API calls: {estimate_info['error']}")
+                            st.session_state.estimate_info = None
+                    except Exception as e:
+                        st.error(f"Error estimating API calls: {str(e)}")
                         st.session_state.estimate_info = None
                 
                 # Handle playlist input
@@ -551,42 +640,50 @@ with st.sidebar:
                         st.session_state.channel_id = ""
                         st.session_state.last_channel_input = channel_input
                 
-                    # Extract channel ID
-                    if "youtube.com/" in channel_input or "youtu.be/" in channel_input:
-                        # Extract username/channel ID from URL
-                        if "youtube.com/c/" in channel_input:
-                            # Legacy custom URL format
-                            username = channel_input.split("/")[-1]
-                        elif "youtube.com/@" in channel_input:
-                            # Handle format
-                            username = channel_input.split("@")[-1].split("/")[0]
-                        elif "youtube.com/channel/" in channel_input:
-                            # Direct channel ID format
-                            st.session_state.channel_id = channel_input.split("/")[-1].split("?")[0]
-                            username = None
-                        elif "youtube.com/user/" in channel_input:
-                            # Legacy username format
-                            username = channel_input.split("/")[-1].split("?")[0]
+                    # Get videos from channel using the alternative method
+                    # Get the channel ID
+                    st.text("Resolving channel identifier...")
+                    try:
+                        # First try without partial matches
+                        channel_info = youtube_api.get_channel_info(channel_input, allow_partial_matches=allow_partial_matches)
+                    except ValueError as e:
+                        if not allow_partial_matches:
+                            # If it fails and partial matches aren't allowed, try again with partial matches
+                            # This helps with well-known channels that don't match exactly
+                            st.warning("Exact match not found. Trying with partial matching enabled.")
+                            channel_info = youtube_api.get_channel_info(channel_input, allow_partial_matches=True)
                         else:
-                            # Other URL format, try to extract any identifier
-                            parts = channel_input.split("/")
-                            username = parts[-1] if parts[-1] else parts[-2]
-                            username = username.split("?")[0]  # Remove query parameters
-                    else:
-                        # Not a URL, use as is
-                        username = channel_input
+                            # If partial matches are already allowed and we still failed, re-raise
+                            raise e
+                            
+                    channel_id = channel_info["channel_id"]
+                    st.session_state.channel_id = channel_id
                     
-                    # Get channel ID if not directly provided
-                    if not st.session_state.channel_id and username:
-                        try:
-                            st.session_state.channel_id = youtube_api.get_channel_id(username)
-                        except ValueError as e:
-                            st.error(f"Error: {str(e)}")
-                            st.info("Try using the full channel URL or ID instead of just the username.")
-                            st.stop()
+                    # Console log the channel ID
+                    print(f"Channel ID found: {channel_id}")
                     
-                    # Get videos from channel
-                    videos = youtube_api.get_all_videos(st.session_state.channel_id)
+                    # Modify the channel ID by replacing the second character with 'U'
+                    if len(channel_id) < 2:
+                        st.error("Invalid channel ID format")
+                        st.stop()
+                        
+                    # Create the modified ID - this is what works in playlist mode
+                    modified_id = channel_id[0] + 'U' + channel_id[2:]
+                    
+                    # Console log the modified ID
+                    print(f"Modified channel ID (for playlist): {modified_id}")
+                    
+                    # Print details for transparency in the UI
+                    st.code(f"Channel ID: {channel_id}\nModified ID: {modified_id}", language="python")
+                    
+                    # Set up the state for playlist mode with the modified ID
+                    st.session_state.source_type = "playlist"
+                    st.session_state.playlist_id = modified_id
+                    st.session_state.last_playlist_input = modified_id
+                    
+                    # Create the direct URL for reference
+                    direct_url = f"https://www.youtube.com/playlist?list={modified_id}"
+                    st.info(f"Using modified channel ID as playlist: [Open in YouTube]({direct_url})")
                 
                 # Handle playlist input
                 elif st.session_state.source_type == "playlist" and playlist_input:
@@ -596,7 +693,33 @@ with st.sidebar:
                         st.session_state.last_playlist_input = playlist_input
                     
                     # Get videos from playlist directly
-                    videos = youtube_api.get_videos_from_playlist(st.session_state.playlist_id)
+                    try:
+                        # Create a progress bar for visual feedback
+                        progress_bar = st.progress(0)
+                        progress_placeholder = st.empty()
+                        
+                        # Function to update progress info in UI
+                        def progress_callback(page_count, video_count):
+                            # Update progress information in the UI
+                            progress_placeholder.write(f"Progress: Retrieved {video_count} videos (page {page_count})")
+                            # Since we don't know total, use a moving progress bar
+                            progress_value = min(0.1 + (page_count % 10) / 10, 0.95)
+                            progress_bar.progress(progress_value)
+                        
+                        # Get videos from playlist with progress updates
+                        videos = youtube_api.get_videos_from_playlist(
+                            st.session_state.playlist_id,
+                            progress_callback=progress_callback
+                        )
+                        
+                        # Complete the progress bar
+                        progress_bar.progress(1.0)
+                        
+                        print(f"Successfully retrieved {len(videos)} videos from playlist")
+                        st.success(f"Found {len(videos)} videos in playlist")
+                    except Exception as e:
+                        st.error(f"Error retrieving playlist: {str(e)}")
+                        st.stop()
                 
                 else:
                     st.error("Please enter either a channel or playlist identifier.")
@@ -864,7 +987,7 @@ if st.session_state.videos_df is not None and not st.session_state.videos_df.emp
                 "search_term": ""
             }
             # Force refresh
-            st.experimental_rerun()
+            st.rerun()
             
         st.markdown('</div>', unsafe_allow_html=True)
     
